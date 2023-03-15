@@ -36,6 +36,16 @@ param(
 	[Parameter(Mandatory = $false, HelpMessage = "Enter the RADIUS OTP")]
 	[ValidateScript({ $AuthType -eq "radius" })]
 	[String]$OTP,
+
+	[Parameter(Mandatory = $false,  HelpMessage = "Enter the RADIUS OTP Mode (Default:Append)")]
+	[ValidateSet("Append","Challenge")]
+	[ValidateScript({ $AuthType -eq "radius" })]
+	[String]$OTPMode = "Append",
+
+	[Parameter(Mandatory = $false, HelpMessage = "Enter the RADIUS OTP Delimiter (Default:',')")]
+	[AllowEmptyString()]
+	[ValidateScript({ $AuthType -eq "radius" })]
+	[String]$OTPDelimiter = ",",
 	
 	[Parameter(ParameterSetName = 'Create', Mandatory = $false, HelpMessage = "Please enter Safe Template Name")]
 	[Alias("safe")]
@@ -156,6 +166,7 @@ $TemplateSafeMembers = ""
 # ---------------------------
 $global:g_LogonHeader = ""
 $global:g_LogAccountName = ""
+$global:g_webSession = $null
 
 #region Helper Functions
 # @FUNCTION@ ======================================================================================================================
@@ -585,22 +596,48 @@ Function Invoke-Rest {
 		[String]$Body, 
 		[Parameter(Mandatory = $false)]
 		[ValidateSet("Continue", "Ignore", "Inquire", "SilentlyContinue", "Stop", "Suspend")]
-		[String]$ErrAction = "Continue"
+		[String]$ErrAction = "Continue",
+		[Parameter(Mandatory = $false)]
+		[ValidateScript({!$UseSession})]
+		[switch]$SaveSession,
+		[Parameter(Mandatory = $false)]
+		[ValidateScript({!$SaveSession})]
+		[switch]$UseSession
 	)
 	
 	If ((Test-CommandExists Invoke-RestMethod) -eq $false) {
 		Throw "This script requires PowerShell version 3 or above"
 	}
 	$restResponse = ""
+	$logMsgCommand = "Invoke-RestMethod -Uri $URI -Method $Command -Header $Header -ContentType ""applicaiton/json"" -Timeout 2700"
+	$restArgs = @{
+		Uri = $URI
+		Method = $Command
+		Header = $Header
+		ContentType = "application/json"
+		Timeout = 2700
+		ErrorAction = $ErrAction
+	}
+	if (![string]::IsNullOrEmpty($Body)) {
+		$restArgs += @{	Body = $Body }
+		$logMsgCommand += " -Body $Body"
+	}
+	if ($SaveSession) {
+		$restArgs += @{ SessionVariable = "Global:g_webSession" }
+		$logMsgCommand += " -SessionVariable ""Global:g_webSession"""
+	}
+	if ($UseSession) {
+		$restArgs += @{ WebSession = $global:g_webSession }
+		$logMsgCommand += " -WebSession <global:g_webSession>"
+	}
 	try {
-		if ([string]::IsNullOrEmpty($Body)) {
-			Write-LogMessage -Type Verbose -Msg "Invoke-RestMethod -Uri $URI -Method $Command -Header $Header -ContentType ""application/json"" -TimeoutSec 2700"
-			$restResponse = Invoke-RestMethod -Uri $URI -Method $Command -Header $Header -ContentType "application/json" -TimeoutSec 2700 -ErrorAction $ErrAction
-		} else {
-			Write-LogMessage -Type Verbose -Msg "Invoke-RestMethod -Uri $URI -Method $Command -Header $Header -ContentType ""application/json"" -Body $Body -TimeoutSec 2700"
-			$restResponse = Invoke-RestMethod -Uri $URI -Method $Command -Header $Header -ContentType "application/json" -Body $Body -TimeoutSec 2700 -ErrorAction $ErrAction
-		}
+		Write-LogMessage -Type Verbose -Msg $logMsgCommand
+		$restResponse = Invoke-RestMethod @restArgs
 	} catch [System.Net.WebException] {
+		if ($_.ErrorDetails.Message -match "ITATS542I" -and $URI -eq $URL_Logon -and $OTPMode -eq "Challenge") {
+			#Expected response for RADIUS challenge-response, preserve the exception and rethrow
+			throw
+		}
 		if ($ErrAction -match ("\bContinue\b|\bInquire\b|\bStop\b|\bSuspend\b")) {
 			Write-LogMessage -Type Error -Msg "Error Message: $_"
 			Write-LogMessage -Type Error -Msg "Exception Message: $($_.Exception.Message)"
@@ -1171,31 +1208,54 @@ Function Get-LogonHeader {
 		[Parameter(Mandatory = $false)]
 		[bool]$concurrentSession,
 		[Parameter(Mandatory = $false)]
-		[string]$RadiusOTP
+		[string]$RadiusOTP,
+		[Parameter(Mandatory = $false)]
+		[string]$RadiusOTPMode,
+		[Parameter(Mandatory = $false)]
+		[string]$RadiusOTPDelimiter
 	)
 	# Create the POST Body for the Logon
 	# ----------------------------------
 	If ($concurrentSession) {
-		$logonBody = @{ username = $Credentials.username.Replace('\', ''); password = $Credentials.GetNetworkCredential().password; concurrentSession = "true" } | ConvertTo-Json -Compress
+		$logonBodyHT = @{ username = $Credentials.username.Replace('\', ''); password = $Credentials.GetNetworkCredential().password; concurrentSession = "true" }
 	} else {
-		$logonBody = @{ username = $Credentials.username.Replace('\', ''); password = $Credentials.GetNetworkCredential().password } | ConvertTo-Json -Compress
+		$logonBodyHT = @{ username = $Credentials.username.Replace('\', ''); password = $Credentials.GetNetworkCredential().password }
 	}
 	If (![string]::IsNullOrEmpty($RadiusOTP)) {
-		$logonBody.Password += ",$RadiusOTP"
+		if ($RadiusOTPMode -eq "Append") {
+			$logonBodyHT.password += "$RadiusOTPDelimiter$RadiusOTP"
+		}
 	}
-	
 	try {
 		# Logon
-		$logonToken = Invoke-Rest -Command Post -Uri $URL_Logon -Body $logonBody
-		# Clear logon body
-		$logonBody = ""
+		if ($RadiusOTPMode -eq "Challenge") {
+			$logonToken = Invoke-Rest -Command Post -Uri $URL_Logon -Body $($logonBodyHT | ConvertTo-Json -Compress) -SaveSession
+		} else {
+			$logonToken = Invoke-Rest -Command Post -Uri $URL_Logon -Body $($logonBodyHT | ConvertTo-Json -Compress)
+		}
 	} catch {
-		Throw $(New-Object System.Exception ("Get-LogonHeader: $($_.Exception.Response.StatusDescription)", $_.Exception))
+		if ($_.ErrorDetails.Message -match "ITATS542I" -and $RadiusOTPMode -eq "Challenge") {
+			#ITATS542I is expected for challenge-response, sending OTP
+			Write-LogMessage -type Info -Msg "RADIUS challenge-response detected, sending OTP..."
+			$logonBodyHT.password = $RadiusOTP
+			try {
+				$logonToken = Invoke-Rest -Command Post -Uri $URL_Logon -Body $($logonBodyHT | ConvertTo-Json -Compress) -UseSession
+			} catch {
+				Throw $(New-Object System.Exception ("Get-LogonHeader: $($_.Exception.Response.StatusDescription)", $_.Exception))
+			}
+		} else {
+			Throw $(New-Object System.Exception ("Get-LogonHeader: $($_.Exception.Response.StatusDescription)", $_.Exception))
+		}	
+	} finally {
+		# Clear logon body
+		$logonBodyHT = $null
 	}
     
 	$logonHeader = $null
 	If ([string]::IsNullOrEmpty($logonToken)) {
 		Throw "Get-LogonHeader: Logon Token is Empty - Cannot login"
+	} else {
+		Write-LogMessage -type Info -Msg "Authentication Successful!"
 	}
 	
 	# Create a Logon Token Header (This will be used through out all the script)
@@ -1379,11 +1439,11 @@ If (![string]::IsNullOrEmpty($logonToken)) {
 		$msg = "Enter your $AuthType User name and Password"; 
 		$creds = $Host.UI.PromptForCredential($caption, $msg, "", "")
 	}
+	$getLogonHeaderParms = @{ Credentials = $creds; concurrentSession = $concurrentSession }
 	if ($AuthType -eq "radius" -and ![string]::IsNullOrEmpty($OTP)) {
-		Set-Variable -Scope Global -Name g_LogonHeader -Value $(Get-LogonHeader -Credentials $creds -concurrentSession $concurrentSession -RadiusOTP $OTP )
-	} else {
-		Set-Variable -Scope Global -Name g_LogonHeader -Value $(Get-LogonHeader -Credentials $creds -concurrentSession $concurrentSession)
+		$getLogonHeaderParms += @{ RadiusOTP = $OTP; RadiusOTPMode = $OTPMode; RadiusOTPDelimiter = $OTPDelimiter }		
 	}
+	Set-Variable -Scope Global -Name g_LogonHeader -Value $(Get-LogonHeader @getLogonHeaderParms)
 	# Verify that we successfully logged on
 	If ($null -eq $g_LogonHeader) { 
 		return # No logon header, end script 

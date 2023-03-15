@@ -26,7 +26,7 @@ There are six FC's that are required to be added to the platform if an account h
 
 ## Parameters:
 ```powershell
-Accounts_Onboard_Utility.ps1 -PVWAURL <string> [-<Create / Update / Delete>] [-AuthType] [-OTP] [-TemplateSafe] [-CsvPath] [-CsvDelimiter] [-DisableSSLVerify] [-NoSafeCreation] [-DisableAutoUpdate] [-CreateOnUpdate] -[ConcurrentSession] [-BypassSafeSearch] [-BypassAccountSearch]
+Accounts_Onboard_Utility.ps1 -PVWAURL <string> [-<Create / Update / Delete>] [-AuthType] [-OTPMode <string>] [-OTPDelimiter <string>] [-OTP] [-TemplateSafe] [-CsvPath] [-CsvDelimiter] [-DisableSSLVerify] [-NoSafeCreation] [-DisableAutoUpdate] [-CreateOnUpdate] -[ConcurrentSession] [-BypassSafeSearch] [-BypassAccountSearch]
 ```
 - PVWAURL
 	- The URL of the PVWA that you are working with. 
@@ -42,6 +42,10 @@ Accounts_Onboard_Utility.ps1 -PVWAURL <string> [-<Create / Update / Delete>] [-A
 	- Authentication types for logon. 
 	- Available values: _CyberArk, LDAP, RADIUS_
 	- Default value: _CyberArk_
+- OTPMode
+    - In cases where RADIUS authentication is used and one-time-password is needed, use this paratmer to specify the expected mechanism for OTP consumption (Append or Challenge).  The default mode is to Append
+- OTPDelimiter
+    - In cases where RADIUS authentication is used and one-time-password is needed, use this paramter to enter the RADIUS server's expected delimiter.  Only relevant when OTPMode is set to "Append".  The default value is the comma ","; you may also supply an empty string (-OTPDelimiter "") if no delimiter is to be used between the password and OTP
 - OTP
 	- In cases where RADIUS authentication is used and one-time-password is needed, use this parameter to enter the OTP value
 - Create / Update / Delete
@@ -78,7 +82,7 @@ Accounts_Onboard_Utility.ps1 -PVWAURL <string> [-<Create / Update / Delete>] [-A
 
 ### Create Command:
 ```powershell
-Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Create [-CPM_NAME <sting>] [-AuthType <string>] [-LogonToken $token] [-OTP <string>] [-TemplateSafe <string>] [-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [-NoSafeCreation] [<CommonParameters>]
+Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Create [-CPM_NAME <sting>] [-AuthType <string>] [-LogonToken $token] [-OTPMode <string>] [-OTPDelimiter <string>] [-OTP <string>] [-TemplateSafe <string>] [-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [-NoSafeCreation] [<CommonParameters>]
 ```
 
 If you just want to Create Accounts:
@@ -108,7 +112,8 @@ If you want to Create Accounts and bypass account searches:
 
 ### Update Command:
 ```powershell
-Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Update [-CPM_NAME <sting>] [-AuthType <string>] [-LogonToken $token] [-OTP <string>] [-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [-NoSafeCreation] [<CommonParameters>]
+Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Update [-CPM_NAME <sting>] [-AuthType <string>] [-LogonToken $token] [-OTPMode <string>] [-OTPDelimiter <string>] [-OTP <string>] 
+[-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [-NoSafeCreation] [<CommonParameters>]
 ```
 
 > **Note:** In order to update specific accounts, make sure you include the account name in the CSV. The uniqueness of an account would be the Safe name and the Account name (object name)
@@ -132,10 +137,15 @@ If you want to Update Accounts and bypass safes searches:
 
 ### Delete Command:
 ```powershell
-Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Delete [-AuthType <string>] [-LogonToken $token] [-OTP <string>] [-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [<CommonParameters>]
+Accounts_Onboard_Utility.ps1 -PVWAURL <string> -Delete [-AuthType <string>] [-LogonToken $token] [-OTPMode <string>] [-OTPDelimiter <string>] [-OTP <string>] [-CsvPath <string>] [-CsvDelimiter <string>] [-DisableSSLVerify] [<CommonParameters>]
 ```
 
-If you want to delete all accounts in the file using RADIUS authentication with one-time-password
+If you want to delete all accounts in the file using RADIUS authentication with one-time-password (append mode)
 ```powershell
-& .\Accounts_Onboard_Utility.ps1 -PVWAURL "https://myPVWA.myDomain.com/PasswordVault" -AuthType "radius" -OTP 1234 -CsvPath .\accounts.csv -Delete
+& .\Accounts_Onboard_Utility.ps1 -PVWAURL "https://myPVWA.myDomain.com/PasswordVault" -AuthType "radius" -OTPMode Append -OTPDelimiter "," -OTP 1234 -CsvPath .\accounts.csv -Delete
+```
+
+If you want to delete all accounts in the file using RADIUS authentication with one-time-password (challenge-response mode)
+```powershell
+& .\Accounts_Onboard_Utility.ps1 -PVWAURL "https://myPVWA.myDomain.com/PasswordVault" -AuthType "radius" -OTPMode Challenge -OTP 1234 -CsvPath .\accounts.csv -Delete
 ```
